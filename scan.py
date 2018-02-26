@@ -1,15 +1,60 @@
 '''
-somewhat following example from here:
+THIS CODE IS FOR EXAMPLE ONLY, IT IS NOT SUPPORTED BY TENABLE, USE AT YOUR OWN RISK
+
+somewhat followed example from here (suggested reading):
 https://docs.tenable.com/sccv/api_best_practices/Content/ScApiBestPractices/LaunchRemediationScan.htm
-the /pluginFamily/<pluginID> call didn't return the family ID as described so using analyze
 
 '''
 from securitycenter import SecurityCenter5
-from StringIO import StringIO
-from zipfile import ZipFile
+from getpass import getpass
 import json
+import click
 from time import sleep
+
+SC_ADDRESS = "lab15"
+SC_USER = "secmgr"
+
 POLLING_INTERVAL = 10
+DEFAULT_REPOSITORY = "Test Repo"
+
+plugin_fields = ','.join([
+    "protocol",
+    "vulnPubDate",
+    "family",
+    "checkType",
+    "exploitAvailable",
+    "srcPort",
+    "solution",
+    "cvssVector",
+    "xrefs",
+    "id",
+    "pluginPubDate",
+    "stigSeverity",
+    "copyright",
+    "baseScore",
+    "pluginModDate",
+    "version",
+    "type",
+    "riskFactor",
+    "temporalScore",
+    "exploitFrameworks",
+    "description",
+    "modifiedTime",
+    "requiredUDPPorts",
+    "dependencies",
+    "requiredPorts",
+    "dstPort",
+    "md5",
+    "name",
+    "sourceFile",
+    "cpe",
+    "synopsis",
+    "exploitEase",
+    "patchPubDate",
+    "cvssVectorBF",
+    "patchModDate",
+    "seeAlso",
+])
 
 
 class Plugin(object):
@@ -19,24 +64,11 @@ class Plugin(object):
 
     def details(self, sc):
         if self.plugin is None:
-            resp = sc.get('plugin/%s' % self.plugin_id)
+            resp = sc.get('plugin/%s' % self.plugin_id, params={
+                'fields': plugin_fields
+            })
             self.plugin = json.loads(resp.content)['response']
         return self.plugin
-
-    def analyze(self, sc, repository, address, port, tool='sumid', sourceType='cumulative', scanID=None):
-        print("{}, {}, {}".format(repository, address, port))
-        if sourceType == 'individual' and scanID is not None:
-            vulns = sc.analysis(('ip', '=', address),
-                ('port', '=', port),
-                ('pluginID', '=', self.plugin_id),
-                ('repository', '=', [repository]),
-                tool=tool, view='all', sourceType=sourceType, scanID=scanID)
-        else:
-            vulns = sc.analysis(('ip', '=', address),
-                ('port', '=', port),
-                ('pluginID', '=', self.plugin_id),
-                ('repository', '=', [repository]), tool=tool)
-        return vulns
 
 
 class Policy(object):
@@ -72,7 +104,7 @@ class Policy(object):
                     ]
                 },
                 {
-                    # this plugin (Nessus Scan Information) must be included on all scans
+                    # the 'Nessus Scan Information' plugin 19506 must be included on all scans
                     "id": "41",
                     "plugins": [
                         {
@@ -86,60 +118,25 @@ class Policy(object):
 
     def post(self, sc):
         resp = sc.post("/policy", json = self.payload)
-        '''
-        {
-            "name": "",
-            "description": "",
-            "context": "scan",
-            "createdTime": 0,
-            "modifiedTime": 0,
-            "groups": [],
-            "policyTemplate": {
-                "id": 1
-            },
-            "auditFiles":[],
-            "preferences": {
-                "portscan_range": "default",
-                "tcp_scanner": "no",
-                "syn_scanner": "yes",
-                "udp_scanner": "no",
-                "syn_firewall_detection": "Automatic (normal)"
-            },
-            "families": [
-                {
-                    "id": self.family_id,
-                    "plugins": [
-                        {
-                            "id": self.plugin_id
-                        }
-                    ]
-                },
-                {
-                    "id": "41",
-                    "plugins": [
-                        {
-                            "id": "19506"
-                        }
-                    ]
-                },
-            ]
-        }
-        '''
-        return json.loads(resp.content)['response']['id']
+        return { "id": json.loads(resp.content)['response']['id'] }
 
 
 class Scan(object):
 
-    def __init__(self, name, repository, policy_id, plugin, address, credentials=None, reports=None):
+    def __init__(self, name, repository, policy, plugin, address, credentials=None, reports=None):
         self.result_id = None
+        self.scan_definition = None
+        self.name = name
         self.payload = {
-            "name": name,
-            # send just the credential 'id' after mapping from a string to an integer within the dict
-            "credentials": [] if credentials is None else list(map(lambda c: {'id': int(c['id'])}, credentials)),
+            "name": self.name,
+            "credentials": [] if credentials is None else credentials,
             "reports": [] if reports is None else reports,
             "pluginID": plugin['id'],
             "ipList": "%s" % address,
+            "assets": [],
             "repository": repository,
+            "type": "policy",
+            "policy": policy,
             "description": "",
             "context": "",
             "createdTime": 0,
@@ -153,23 +150,27 @@ class Scan(object):
             "dhcpTracking": "true",
             "emailOnLaunch": "false",
             "emailOnFinish": "false",
-            "type": "policy",
-            "policy": {
-                "id": policy_id
-            },
             "timeoutAction": "import",
-            # "rolloverType": "template",
             "scanningVirtualHosts": "false",
             "classifyMitigatedAge": 0,
-            "assets": [],
             "maxScanTime": "unlimited"
         }
 
-    def launch(self, sc):
-        resp = sc.post("/scan", json=self.payload).json()['response']
-        self.result_id = resp['scanResultID']
-        debug("Launched scan, resultID=%s" % self.result_id, json.dumps(resp, indent=4))
+
+    def launch(self, sc, blocking=False):
+        self.scan_definition = sc.post("/scan", json=self.payload).json()['response']
+        self.result_id = self.scan_definition['scanResultID']
+        debug("SCAN Launched", json.dumps(self.scan_definition, indent=4))
+
+        if blocking == True:
+            def scan_complete_or_error(sc):
+               status = sc.get('scanResult/%s' % self.result_id).json()['response']['status']
+               return status == 'Completed' or status == 'Error'
+            wait_until(scan_complete_or_error, sc)
+            debug("SCAN COMPLETE", "%s ID=%s" % (self.name, self.result_id))
+
         return self
+
 
 def wait_until(condition, context=None, interval=POLLING_INTERVAL):
     while True:
@@ -191,82 +192,121 @@ def get_credentials(sc):
         'filter': 'usable',
         'fields': 'id'
     })
-    return resp.json()['response']['usable']
+    credentials = resp.json()['response']['usable']
+    debug("Credentials", json.dumps(credentials, indent=4))
+    # credential 'id' must be passed as an int, cast before returning
+    return list(map(lambda c: {'id': int(c['id'])}, credentials))
 
-
-def print_debug(label, output):
-    print("{}:".format(label.upper()))
-    print("{}\n".format(output))
-    return True
 
 DEBUG_ON = True
-debug = lambda l, o: print_debug(l,o) if DEBUG_ON else False
+def debug(label, output=''):
+    if DEBUG_ON:
+        print("{}:".format(label.upper()))
+        print("{}\n".format(output))
+        return True
+    else:
+        return False
 
 
-def launch_remediaton_scan(sc, repository, scan_name, address, port, plugin):
 
+def remediation_scan(sc, repository_name, plugin_id, address, port):
+
+    name = "Remediation scan for #%s, %s:%s" % (plugin_id, address, port)
+
+    # grab plugin details including family_id needed for policy
+    p = Plugin(plugin_id)
+    plugin = p.details(sc)
+    debug("plugin details", json.dumps(plugin, indent=4))
+
+    # need a repository to store the results
+    repository = get_repository(sc, repository_name)
+    if not repository:
+        print("repository '{}', not found".format(repository_name))
+        exit(1)
+
+    # optionally grab credentials
     credentials = get_credentials(sc)
-    # print("CREDENTIALS:")
-    # print(json.dumps(credentials, indent=4))
-    debug("credentials", json.dumps(credentials, indent=4))
 
-    # repo_vulns = vulnerability.analyze(sc, repository_id, tool='sumid')
+    # Create and post scan policy
+    policy = Policy(plugin).post(sc)
 
-    # The scan policy requires a name and the family_id from 'plugin'
-    policy = Policy(plugin)
-    policy_id = policy.post(sc)
-
-    debug("LAUNCHING", scan_name)
-    scan = Scan(scan_name, repository, policy_id, plugin, address, credentials)
+    # Launch the scan
+    debug("LAUNCHING", name)
+    scan = Scan(name, repository, policy, plugin, address, credentials)
     scan.launch(sc)
 
     return scan
 
 
+@click.group()
+def cli():
+    pass
+
+@cli.command()
+@click.argument('plugin_id')
+@click.argument('address')
+@click.argument('port')
+@click.option('--repository', default=DEFAULT_REPOSITORY)
+@click.pass_context
+def launch(ctx, plugin_id, address, port, repository):
+    sc = ctx.obj['sc']
+    scan = remediation_scan(sc, repository, plugin_id, address, port)
+    click.echo("Scan running scan_result_id is {}".format(scan.result_id))
+
+@cli.command()
+@click.argument('plugin_id')
+@click.argument('address')
+@click.argument('port')
+@click.option('--repository', default=DEFAULT_REPOSITORY)
+@click.option('--scan-id', default=0)
+@click.pass_context
+def analyze(ctx, plugin_id, address, port, repository, scan_id):
+
+    sc = ctx.obj['sc']
+
+    def print_results(vulns):
+        if vulns is None:
+            click.echo("Zero results found.")
+        else:
+            for vuln in vulns:
+                click.echo(json.dumps(vuln, indent=4))
+
+    if scan_id:
+        click.echo("Individual Scan Results (ID={}), Vulns:".format(scan_id))
+        vulns  = sc.analysis(('ip', '=', address), ('pluginID', '=', plugin_id),
+                   tool='sumid', sourceType='individual', scanID=scan_id, view='all')
+        print_results(vulns)
+
+        click.echo("Individual Scan Results (ID={}), Remediated:".format(scan_id))
+        vulns  = sc.analysis(('ip', '=', address), ('pluginID', '=', plugin_id),
+                   tool='sumid', sourceType='individual', scanID=scan_id, view='patched')
+        print_results(vulns)
+    else:
+        click.echo("Cumulative Scan Results (Vulns): ")
+        vulns  = sc.analysis(('ip', '=', address), ('pluginID', '=', plugin_id),
+               tool='sumid', sourceType='cumulative')
+        print_results(vulns)
+
+        click.echo("Cumulative Scan Results (Mitigated): ")
+        vulns  = sc.analysis(('ip', '=', address), ('pluginID', '=', plugin_id),
+                   tool='sumid', sourceType='patched')
+        print_results(vulns)
+
+
 def main():
-    sc_address = "lab15"
-    username = "secmgr"
+    address = raw_input("SecurityCenter[{}]:".format(SC_ADDRESS))
+    address = address if address else SC_ADDRESS
+
+    username = raw_input("user[{}]:".format(SC_USER))
+    username = username if username else SC_USER
+
     password = "TestPassw0rd"
+    #password = getpass("password:")
 
-    address = '172.26.48.14'
-    port = '445'
-    plugin_id = '97737'
-    repo_name = "Test Repo"
-    name = "Remediation scan of %s:%s for #%s" % (address, port, plugin_id)
-
-    sc = SecurityCenter5(sc_address)
+    sc = SecurityCenter5(address)
     sc.login(username, password)
 
-    # grab plugin details including family_id needed for policy
-    plugin = Plugin(plugin_id)
-    plugin_details = plugin.details(sc)
-    debug("plugin details", json.dumps(plugin_details, indent=4))
-
-    # need a repository to store the results
-    repository = get_repository(sc, repo_name)
-    if not repository:
-        print("repository '{}', not found".format(repo_name))
-        exit(1)
-
-
-    scan = launch_remediaton_scan(sc, repository, name, address, port, plugin_details)
-
-    def scan_complete(sc):
-        status = sc.get('scanResult/%s' % scan.result_id).json()['response']['status']
-        return status == 'Completed' or status == 'Error'
-
-    wait_until(scan_complete, sc)
-    debug("SCAN COMPLETE", "%s ID=%s" % (name, scan.result_id))
-    
-    # result = sc.get('scanResult/%s' % scan.result_id).json()['response']
-    # debug("Scan results", json.dumps(result, indent=4))
-
-    vulns = plugin.analyze(sc, repository, address, port, tool='vulndetails', sourceType='individual', scanID="101")
-
-    for vuln in vulns:
-        print(json.dumps(vuln, indent=4))
-
-
+    cli(obj={'sc': sc})
 
 
 

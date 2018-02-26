@@ -1,7 +1,13 @@
 '''
 THIS CODE IS FOR EXAMPLE ONLY, IT IS NOT SUPPORTED BY TENABLE, USE AT YOUR OWN RISK
 
-somewhat followed example from here (suggested reading):
+This is an example of performing a remediation scan for a specific plugin
+against a specific IP address. The advanced scan template also sends other 
+probes to identify the operating system and services. Configuration
+settings in the scan definition can be tuned to further control traffic, for 
+example, to limit port scans to a specific port.
+
+This was roughly based on this example which is (suggested reading):
 https://docs.tenable.com/sccv/api_best_practices/Content/ScApiBestPractices/LaunchRemediationScan.htm
 
 '''
@@ -300,8 +306,8 @@ def main():
     username = raw_input("user[{}]:".format(SC_USER))
     username = username if username else SC_USER
 
-    password = "TestPassw0rd"
-    #password = getpass("password:")
+    password = ""
+    password = password if password else getpass("password:")
 
     sc = SecurityCenter5(address)
     sc.login(username, password)

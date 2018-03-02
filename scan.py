@@ -1,16 +1,10 @@
 '''
 THIS CODE IS FOR EXAMPLE ONLY, IT IS NOT SUPPORTED BY TENABLE, USE AT YOUR OWN RISK
 
-This is an example of performing a remediation scan for a specific plugin
-against a specific IP address. The advanced scan template also sends other 
-probes to identify the operating system and services. Configuration
-settings in the scan definition can be tuned to further control traffic, for 
-example, to limit port scans to a specific port.
-
-This was roughly based on this example which is (suggested reading):
+somewhat followed example from here (suggested reading):
 https://docs.tenable.com/sccv/api_best_practices/Content/ScApiBestPractices/LaunchRemediationScan.htm
-
 '''
+
 from securitycenter import SecurityCenter5
 from getpass import getpass
 import json
@@ -288,15 +282,24 @@ def analyze(ctx, plugin_id, address, port, repository, scan_id):
                    tool='sumid', sourceType='individual', scanID=scan_id, view='patched')
         print_results(vulns)
     else:
-        click.echo("Cumulative Scan Results (Vulns): ")
         vulns  = sc.analysis(('ip', '=', address), ('pluginID', '=', plugin_id),
-               tool='sumid', sourceType='cumulative')
-        print_results(vulns)
+               tool='vulndetails', sourceType='cumulative')
 
-        click.echo("Cumulative Scan Results (Mitigated): ")
-        vulns  = sc.analysis(('ip', '=', address), ('pluginID', '=', plugin_id),
-                   tool='sumid', sourceType='patched')
-        print_results(vulns)
+        if vulns is None:
+            # no vulns found, validate results are in 'patched' db
+            results  = sc.analysis(('ip', '=', address), ('pluginID', '=', plugin_id),
+                           tool='sumid', sourceType='patched')
+            if results:
+                click.echo("Vulnerability been REMEDIATED, (Cumulative Database)")
+                print_results(results)
+            else:
+                click.echo("remediation NOT VERIFIED")
+
+        else:
+            click.echo("Vulnerabilty EXISTS, found in Cumulative Database: ")
+            click.echo(vulns[0]['pluginText'])
+            print_results(vulns)
+
 
 
 def main():
@@ -305,14 +308,12 @@ def main():
 
     username = raw_input("user[{}]:".format(SC_USER))
     username = username if username else SC_USER
-
-    password = ""
-    password = password if password else getpass("password:")
+    password = getpass("password:")
 
     sc = SecurityCenter5(address)
     sc.login(username, password)
 
-    cli(obj={'sc': sc})
+    cli(obj={'sc' : sc})
 
 
 
